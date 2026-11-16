@@ -1,0 +1,64 @@
+apply plugin: "com.android.library"
+apply plugin: "kotlin-android"
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+// Override with `ReveChat_sdkVersion=x.y.z` in the app's android/gradle.properties.
+def reveChatSdkVersion = rootProject.findProperty("ReveChat_sdkVersion") ?: "3.4.6_stc_uat"
+
+// `ReveChat_useLocalSdk=true` resolves the SDK from mavenLocal first (ReveChat developers only; leave unset).
+def reveChatUseLocalSdk = rootProject.findProperty("ReveChat_useLocalSdk") == "true"
+
+// The SDK's transitive artifacts are resolved by the app project, so the repositories
+// must be added to every project, not only to this library.
+rootProject.allprojects {
+  repositories {
+    if (reveChatUseLocalSdk) {
+      mavenLocal {
+        content { includeGroup "com.revesoft.revechatsdk" }
+      }
+    }
+    maven { url "https://jitpack.io" }
+    // Only queried for the ReveChat WebRTC artifact, so an outage here cannot break unrelated dependencies.
+    maven {
+      url "https://maven.iptelephony.revesoft.com/artifactory/libs-release-local/"
+      content { includeGroup "com.revesoft.webrtc" }
+    }
+    maven { url "https://jfrog-artifact.revechat.com/artifactory/artifactory/" }
+  }
+}
+
+android {
+  namespace "com.revechat.reactnative"
+  compileSdk safeExtGet("compileSdkVersion", 35)
+
+  defaultConfig {
+    minSdk safeExtGet("minSdkVersion", 24)
+    targetSdk safeExtGet("targetSdkVersion", 35)
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "com.facebook.react:react-android"
+  implementation "androidx.lifecycle:lifecycle-process:2.6.2"
+  // Must be `api`, not `implementation`. The SDK's chat screens use Data Binding, and the app's merged
+  // DataBinderMapperImpl is built from the app's compile classpath. With `implementation` the SDK is
+  // missing from it, DataBindingUtil.inflate returns null and the chat screen crashes on open.
+  api "com.revesoft.revechatsdk:revechatsdk:${reveChatSdkVersion}"
+}
