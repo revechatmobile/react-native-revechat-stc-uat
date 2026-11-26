@@ -2,7 +2,8 @@ require "json"
 
 package = JSON.parse(File.read(File.join(__dir__, "package.json")))
 
-# 3.1.0-stc-uat is the STC UAT build of ReveChatSDK 3.1.0: an XCFramework (device + simulator) whose only
+# 3.1.0-stc-uat is the STC build of ReveChatSDK 3.1.0 (production by default, UAT via setEnvironment; the zip behind it
+# was replaced on 26 Nov 2026, so older installs need `pod cache clean ReveChatSDK --all`): an XCFramework (device + simulator) whose only
 # dependency is WebRTC-lib, so the host Podfile needs no ReveChat hooks. It is a CocoaPods pre-release, which
 # only resolves when named exactly ("~> 3.1" will not pick it). Move to "~> 3.1" once 3.1.0 is published.
 # Override per app with REVECHAT_IOS_SDK_VERSION.

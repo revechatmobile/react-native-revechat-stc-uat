@@ -1,14 +1,157 @@
 #import <React/RCTBridgeModule.h>
+#import <React/RCTEventEmitter.h>
 #import <UIKit/UIKit.h>
+#import <UserNotifications/UserNotifications.h>
 #import <objc/message.h>
 #import <ReveChatSDK/ReveChatSDK.h>
 
-@interface ReveChatModule : NSObject <RCTBridgeModule>
+@interface ReveChatModule : RCTEventEmitter <RCTBridgeModule>
 @end
 
 @implementation ReveChatModule
 
 RCT_EXPORT_MODULE(ReveChat)
+
+// Posted by the SDK (names are plain strings, so an older SDK that never posts them still links).
+static NSString *const ReveChatBotStartNotification = @"ReveChatBotStartNotification";
+static NSString *const ReveChatWebHookNotification = @"ReveChatWebHookNotification";
+static NSString *const ReveChatBotFinishedNotification = @"ReveChatBotFinishedNotification";
+static NSString *const ReveChatOpenedNotification = @"ReveChatOpenedNotification";
+static NSString *const ReveChatClosedNotification = @"ReveChatClosedNotification";
+static NSString *const ReveChatUnreadCountNotification = @"ReveChatUnreadCountNotification";
+
+// Posted by the host app from userNotificationCenter(_:didReceive:withCompletionHandler:), with the
+// UNNotificationResponse as the object. The app owns the notification delegate (an app has only one), so the wrapper
+// cannot receive taps by itself.
+static NSString *const ReveChatNotificationTappedNotification = @"ReveChatNotificationTapped";
+
+// The latest tap that no notificationTap listener has taken yet. Handed over once by getPendingNotificationTap.
+static NSDictionary *sPendingNotificationTap = nil;
+// The module while JS has listeners (of any event), so it can be told that a tap is waiting.
+static __weak ReveChatModule *sObservingModule = nil;
+
+// What the tap was on. The SDK's local notifications carry no userInfo, so their identifier is all there is; a remote
+// (APNs) push has no ReveChat identifier and the app decides from its payload.
+static NSString *ReveChatNotificationKind(UNNotificationRequest *request)
+{
+  if ([request.trigger isKindOfClass:[UNPushNotificationTrigger class]]) {
+    return @"remote";
+  }
+  NSString *identifier = request.identifier;
+  if ([identifier hasPrefix:@"ReveChatLanding_"] || [identifier hasPrefix:@"ReveChatAgent_"]) {
+    return @"message";
+  }
+  if ([identifier isEqualToString:@"OutsideNotification"]) {
+    return @"chatStarted";
+  }
+  if ([identifier hasPrefix:@"ReveChatIncomingCall_"]) {
+    return @"call";
+  }
+  return @"other";
+}
+
+static NSDictionary *ReveChatNotificationTapBody(UNNotificationResponse *response)
+{
+  UNNotificationRequest *request = response.notification.request;
+  // userInfo may hold any property-list type (dates, data) that cannot cross to JS; send it only when it is plain JSON.
+  NSDictionary *userInfo = request.content.userInfo;
+  NSDictionary *data = [NSJSONSerialization isValidJSONObject:userInfo] ? userInfo : @{};
+  return @{
+    @"kind" : ReveChatNotificationKind(request),
+    @"identifier" : request.identifier ?: @"",
+    @"data" : data,
+  };
+}
+
+// Registered at load time, before the app finishes launching, so the tap that launches the app is not missed even
+// though React Native creates this module later. A constructor function, because RCT_EXPORT_MODULE already defines
+// +load.
+__attribute__((constructor)) static void ReveChatObserveNotificationTaps(void)
+{
+  [NSNotificationCenter.defaultCenter addObserverForName:ReveChatNotificationTappedNotification
+                                                  object:nil
+                                                   queue:NSOperationQueue.mainQueue
+                                              usingBlock:^(NSNotification *note) {
+    if (![note.object isKindOfClass:[UNNotificationResponse class]]) {
+      return;
+    }
+    UNNotificationResponse *response = note.object;
+    // Swiping a notification away is not a tap (iOS reports it only for categories that ask for it).
+    if ([response.actionIdentifier isEqualToString:UNNotificationDismissActionIdentifier]) {
+      return;
+    }
+    // Always kept: "JS has listeners" does not mean one of them listens for taps (it may only have chat or bot
+    // listeners). The event only says that a tap is waiting; a notificationTap listener takes it.
+    sPendingNotificationTap = ReveChatNotificationTapBody(response);
+    [sObservingModule sendEventWithName:@"ReveChatNotificationTap" body:@{}];
+  }];
+}
+
+- (NSArray<NSString *> *)supportedEvents
+{
+  return @[ @"ReveChatBotStart", @"ReveChatWebHook", @"ReveChatBotFinished", @"ReveChatOpened", @"ReveChatClosed",
+            @"ReveChatUnreadCount", @"ReveChatNotificationTap" ];
+}
+
+- (void)startObserving
+{
+  NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+  [center addObserver:self selector:@selector(onBotStart:) name:ReveChatBotStartNotification object:nil];
+  [center addObserver:self selector:@selector(onWebHook:) name:ReveChatWebHookNotification object:nil];
+  [center addObserver:self selector:@selector(onBotFinished:) name:ReveChatBotFinishedNotification object:nil];
+  sObservingModule = self;
+  [center addObserver:self selector:@selector(onChatOpened:) name:ReveChatOpenedNotification object:nil];
+  [center addObserver:self selector:@selector(onChatClosed:) name:ReveChatClosedNotification object:nil];
+  [center addObserver:self selector:@selector(onUnreadCount:) name:ReveChatUnreadCountNotification object:nil];
+}
+
+- (void)stopObserving
+{
+  [NSNotificationCenter.defaultCenter removeObserver:self];
+  if (sObservingModule == self) {
+    sObservingModule = nil;
+  }
+}
+
+// The waiting tap, or null. Returned once.
+RCT_EXPORT_METHOD(getPendingNotificationTap:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  NSDictionary *tap = sPendingNotificationTap;
+  sPendingNotificationTap = nil;
+  resolve(tap ?: (id)[NSNull null]);
+}
+
+- (void)onBotStart:(NSNotification *)note
+{
+  [self sendEventWithName:@"ReveChatBotStart"
+                     body:@{ @"botId" : note.userInfo[@"botId"] ?: @"", @"sessionId" : note.userInfo[@"sessionId"] ?: @"" }];
+}
+
+- (void)onWebHook:(NSNotification *)note
+{
+  [self sendEventWithName:@"ReveChatWebHook" body:@{ @"script" : note.userInfo[@"script"] ?: @"" }];
+}
+
+- (void)onBotFinished:(NSNotification *)note
+{
+  [self sendEventWithName:@"ReveChatBotFinished" body:@{}];
+}
+
+- (void)onChatOpened:(NSNotification *)note
+{
+  [self sendEventWithName:@"ReveChatOpened" body:@{}];
+}
+
+- (void)onChatClosed:(NSNotification *)note
+{
+  [self sendEventWithName:@"ReveChatClosed" body:@{}];
+}
+
+- (void)onUnreadCount:(NSNotification *)note
+{
+  [self sendEventWithName:@"ReveChatUnreadCount" body:@{ @"count" : note.userInfo[@"count"] ?: @0 }];
+}
 
 + (BOOL)requiresMainQueueSetup
 {
@@ -185,6 +328,13 @@ RCT_EXPORT_METHOD(startChat:(NSDictionary *)options
   }
 
   [manager setupAccountWith:accountId];
+  // Remembered so logout can clear this account even after the app was restarted.
+  [[NSUserDefaults standardUserDefaults] setObject:accountId forKey:@"ReveChatRNAccountId"];
+  // Optional widget ID; empty uses the account's default widget. An SDK without widget ID support ignores it.
+  if ([manager respondsToSelector:NSSelectorFromString(@"setWidgetId:")]) {
+    NSString *widgetId = [ReveChatString(options, @"widgetId") stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    [manager setValue:(widgetId.length > 0 ? widgetId : nil) forKey:@"widgetId"];
+  }
   // Optional language override ("ar", "en", ...); empty follows the device language. Older SDK versions without
   // the `language` property ignore it.
   if ([manager respondsToSelector:@selector(setLanguage:)]) {
@@ -216,6 +366,69 @@ RCT_EXPORT_METHOD(clearAccountData:(NSString *)accountId
   }
   ((void (*)(Class, SEL, NSString *))objc_msgSend)(managerClass, selector, accountId);
   resolve(nil);
+}
+
+// STC iOS SDK only: chooses the chat server. +[ReveChatManager setEnvironment:] (0 = production, 1 = UAT) is looked up by
+// name because other SDK builds do not have it.
+RCT_EXPORT_METHOD(setEnvironment:(NSString *)environment
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  NSString *name = [environment lowercaseString];
+  if (![name isEqualToString:@"production"] && ![name isEqualToString:@"uat"]) {
+    reject(@"E_INVALID_ARGUMENT", @"environment must be 'production' or 'uat'", nil);
+    return;
+  }
+  Class managerClass = NSClassFromString(@"ReveChatManager");
+  SEL selector = NSSelectorFromString(@"setEnvironment:");
+  if (managerClass == nil || ![managerClass respondsToSelector:selector]) {
+    reject(@"E_UNSUPPORTED", @"This ReveChat SDK has no environment switch (needs the STC SDK)", nil);
+    return;
+  }
+  ((void (*)(Class, SEL, NSInteger))objc_msgSend)(managerClass, selector, [name isEqualToString:@"uat"] ? 1 : 0);
+  resolve(nil);
+}
+
+// Logs the visitor out: clears the data of the account the chat last ran on (history, visitor id, saved details) and
+// stops its session, so the next chat starts as a new visitor.
+RCT_EXPORT_METHOD(logout:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  Class managerClass = NSClassFromString(@"ReveChatManager");
+  // Newer iOS SDKs have +logout, which clears the account in use.
+  SEL logoutSelector = NSSelectorFromString(@"logout");
+  if (managerClass != nil && [managerClass respondsToSelector:logoutSelector]) {
+    ((void (*)(Class, SEL))objc_msgSend)(managerClass, logoutSelector);
+    resolve(nil);
+    return;
+  }
+  // Older SDKs: clear the account this app last started a chat on.
+  NSString *accountId = [[NSUserDefaults standardUserDefaults] stringForKey:@"ReveChatRNAccountId"];
+  if (accountId.length == 0) {
+    resolve(nil); // no chat was ever started from this app: nothing stored
+    return;
+  }
+  SEL selector = NSSelectorFromString(@"clearDataForAccount:");
+  if (managerClass == nil || ![managerClass respondsToSelector:selector]) {
+    reject(@"E_UNSUPPORTED", @"This ReveChat SDK version cannot log out", nil);
+    return;
+  }
+  ((void (*)(Class, SEL, NSString *))objc_msgSend)(managerClass, selector, accountId);
+  resolve(nil);
+}
+
+// Messages that arrived while the chat screen was not open (0 on an SDK without the counter).
+RCT_EXPORT_METHOD(getUnreadCount:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  Class managerClass = NSClassFromString(@"ReveChatManager");
+  SEL selector = NSSelectorFromString(@"unreadMessageCount");
+  if (managerClass != nil && [managerClass respondsToSelector:selector]) {
+    NSInteger count = ((NSInteger (*)(Class, SEL))objc_msgSend)(managerClass, selector);
+    resolve(@(count));
+    return;
+  }
+  resolve(@0);
 }
 
 RCT_EXPORT_METHOD(setDeviceToken:(NSString *)token

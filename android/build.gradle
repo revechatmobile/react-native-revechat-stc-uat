@@ -6,7 +6,7 @@ def safeExtGet(prop, fallback) {
 }
 
 // Override with `ReveChat_sdkVersion=x.y.z` in the app's android/gradle.properties.
-def reveChatSdkVersion = rootProject.findProperty("ReveChat_sdkVersion") ?: "3.4.6_stc_uat"
+def reveChatSdkVersion = rootProject.findProperty("ReveChat_sdkVersion") ?: "3.4.8_stc"
 
 // `ReveChat_useLocalSdk=true` resolves the SDK from mavenLocal first (ReveChat developers only; leave unset).
 def reveChatUseLocalSdk = rootProject.findProperty("ReveChat_useLocalSdk") == "true"

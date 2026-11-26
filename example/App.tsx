@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Alert,
@@ -16,7 +16,7 @@ import {
   SafeAreaProvider,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-import { startChat } from 'react-native-revechat';
+import { addChatListener, logout, setEnvironment, startChat } from 'react-native-revechat';
 
 const ORANGE = '#EF6C00';
 const STORAGE_KEY = 'revechat_example_form';
@@ -61,6 +61,26 @@ function Home() {
   const [backgroundOpen, setBackgroundOpen] = useState(false);
   const [backgroundColor, setBackgroundColor] = useState('');
   const [restored, setRestored] = useState(false);
+  // The last bot events the SDK reported (bot start, webhook script, chat finished), newest first.
+  const [events, setEvents] = useState<string[]>([]);
+  // STC SDK: false = production (the default), true = UAT.
+  const [uat, setUat] = useState(false);
+
+  // Bot callbacks: shown on screen and logged, so they can be checked while a bot chat runs.
+  useEffect(() => {
+    const add = (line: string) => {
+      console.log('[ReveChat event]', line);
+      setEvents(list => [`${new Date().toLocaleTimeString()}  ${line}`, ...list].slice(0, 8));
+    };
+    const stopStart = addChatListener('botStart', e => add(`botStart  bot=${e.botId}  session=${e.sessionId}`));
+    const stopHook = addChatListener('webHook', e => add(`webHook  ${e.script}`));
+    const stopEnd = addChatListener('botFinished', () => add('botFinished'));
+    return () => {
+      stopStart();
+      stopHook();
+      stopEnd();
+    };
+  }, []);
 
   // Remember the form between launches.
   useEffect(() => {
@@ -77,6 +97,7 @@ function Home() {
             setBackground(saved.background);
           }
           setBackgroundColor(saved.backgroundColor ?? '');
+          setUat(!!saved.uat);
           if (LANGUAGES.some(l => l.value === saved.language)) {
             setLanguage(saved.language);
           }
@@ -90,10 +111,10 @@ function Home() {
     if (restored) {
       AsyncStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ accountId, name, email, phone, customFont, language, background, backgroundColor }),
+        JSON.stringify({ accountId, name, email, phone, customFont, language, background, backgroundColor, uat }),
       ).catch(() => {});
     }
-  }, [restored, accountId, name, email, phone, customFont, language, background, backgroundColor]);
+  }, [restored, accountId, name, email, phone, customFont, language, background, backgroundColor, uat]);
 
   const onStartChat = async () => {
     if (!accountId.trim()) {
@@ -106,6 +127,14 @@ function Home() {
     }
     setBusy(true);
     try {
+      try {
+        // Picks the STC server (production or UAT) before the chat starts. Builds without the switch reject; ignored.
+        await setEnvironment(uat ? 'uat' : 'production');
+      } catch (e) {
+        if (!(e instanceof Error && /E_UNSUPPORTED|no environment switch/.test(e.message + String((e as {code?: string}).code)))) {
+          throw e;
+        }
+      }
       // The four values are passed straight to the native Android / iOS SDK.
       await startChat({
         accountId: accountId.trim(),
@@ -123,6 +152,34 @@ function Home() {
             }
           : undefined,
       });
+    } catch (e) {
+      Alert.alert('ReveChat', e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // iOS: a tap on a ReveChat notification opens the chat with the saved form (AppDelegate.swift passes taps on).
+  // startChat does nothing if the chat is already on screen.
+  const startChatRef = useRef(onStartChat);
+  startChatRef.current = onStartChat;
+  useEffect(() => {
+    if (!restored) {
+      return; // wait for the saved account ID, or a tap that launched the app would find an empty form
+    }
+    return addChatListener('notificationTap', tap => {
+      if (tap.kind !== 'other') {
+        startChatRef.current();
+      }
+    });
+  }, [restored]);
+
+  const onLogout = async () => {
+    setBusy(true);
+    try {
+      // Clears the local chat data and the visitor id: the next CHAT WITH US starts as a new visitor.
+      await logout();
+      Alert.alert('ReveChat', 'Logged out. The next chat starts as a new visitor.');
     } catch (e) {
       Alert.alert('ReveChat', e instanceof Error ? e.message : String(e));
     } finally {
@@ -179,6 +236,12 @@ function Home() {
           disabled={busy}
           onPress={onStartChat}>
           <Text style={styles.buttonText}>CHAT WITH US</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.logoutButton, busy && styles.buttonDisabled]}
+          disabled={busy}
+          onPress={onLogout}>
+          <Text style={styles.logoutButtonText}>LOG OUT</Text>
         </TouchableOpacity>
         <View style={styles.row}>
           <Text style={styles.rowLabel}>Chat language</Text>
@@ -254,6 +317,20 @@ function Home() {
           <Text style={styles.rowLabel}>Custom font (Xarrovv)</Text>
           <Switch value={customFont} onValueChange={setCustomFont} />
         </View>
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>Server: {uat ? 'STC UAT' : 'STC production'}</Text>
+          <Switch value={uat} onValueChange={setUat} />
+        </View>
+        <Text style={styles.eventsTitle}>Chat events</Text>
+        {events.length === 0 ? (
+          <Text style={styles.eventLine}>None yet</Text>
+        ) : (
+          events.map((line, i) => (
+            <Text key={i} style={styles.eventLine}>
+              {line}
+            </Text>
+          ))
+        )}
       </ScrollView>
     </View>
   );
@@ -292,6 +369,17 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   buttonDisabled: { opacity: 0.6 },
+  logoutButton: {
+    borderColor: ORANGE,
+    borderWidth: 1,
+    borderRadius: 4,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  eventsTitle: { color: '#000', fontWeight: '700', marginTop: 20, marginBottom: 6 },
+  eventLine: { color: '#444', fontSize: 12, marginBottom: 4 },
+  logoutButtonText: { color: ORANGE, fontSize: 16, fontWeight: '700' },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   row: {
     flexDirection: 'row',

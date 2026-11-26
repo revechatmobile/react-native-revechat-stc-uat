@@ -1,6 +1,6 @@
 {
   "name": "react-native-revechat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ReveChat live chat for React Native. Thin wrapper over the native ReveChat Android and iOS SDKs.",
   "main": "src/index.ts",
   "react-native": "src/index.ts",

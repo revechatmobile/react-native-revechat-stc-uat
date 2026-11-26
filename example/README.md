@@ -12,7 +12,7 @@ cd ios && bundle install && bundle exec pod install && cd .. && npm run ios   # 
 ```
 
 - Android: compile/target SDK 36, min SDK 24, Kotlin 2.1.20, NDK 28.2. SDK version override:
-  `-PReveChat_sdkVersion=3.4.6_stc_uat` (Jetifier in `gradle.properties` is only needed for 3.4.0).
+  `-PReveChat_sdkVersion=3.4.8_stc` (Jetifier in `gradle.properties` is only needed for 3.4.0).
 - iOS: deployment target 15.1, static frameworks (`USE_FRAMEWORKS=dynamic` to compare), ReveChatSDK `3.1.0-stc-uat`
   from CocoaPods through the wrapper's podspec. No ReveChat hooks in the Podfile. Runs on the simulator.
 - The "Chat language" dropdown (System, English, Arabic) is passed to the SDK as `language`; the host app itself stays left-to-right.
@@ -24,6 +24,6 @@ cd ios && bundle install && bundle exec pod install && cd .. && npm run ios   # 
 
 The example sets `android:launchMode="singleTop"` for `MainActivity` (the React Native template uses `singleTask`).
 With `singleTask`, tapping the launcher icon while the chat is open sends the MAIN intent to `MainActivity`, which
-clears every activity above it in the task, so the chat screen is destroyed and the app shows its landing page
-(ASDK-2413). With `singleTop` the chat screen is still there when the user returns. Host apps that want to come
+clears every activity above it in the task, so the chat screen is destroyed and the app shows its landing page.
+With `singleTop` the chat screen is still there when the user returns. Host apps that want to come
 back to an open chat should do the same.

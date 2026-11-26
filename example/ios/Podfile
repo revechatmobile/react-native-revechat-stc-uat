@@ -42,5 +42,17 @@ target 'ReveChatExample' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # Xcode 27 rejects any deployment target below 15.0 (Xcode 26 only warned). react_native_post_install raises the
+    # pods' own targets, but not their resource-bundle targets (RNCAsyncStorage_resources declares 13.4), so cover
+    # every target here. Not ReveChat-specific: ReveChatSDK and WebRTC-lib declare 15.0.
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+        current = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f
+        if current > 0 && current < 15.0
+          config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+        end
+      end
+    end
   end
 end
